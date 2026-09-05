@@ -37,9 +37,16 @@ def init_db():
         )
     ''')
     
-    cursor.execute('SELECT COUNT(*) FROM wards')
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO wards (ward_id, ward_name) VALUES (4, 'Ward 4 - Kullu Valley')")
+    # Initialize all key wards in Kullu Valley GIS
+    wards_data = [
+        (1, "Ward 1 - Old Manali (Beas Upper Reach)"),
+        (2, "Ward 2 - Naggar / Left Bank"),
+        (3, "Ward 3 - Aut & Larji Catchment"),
+        (4, "Ward 4 - Kullu Valley (Pandoh Bypass)"),
+        (5, "Ward 5 - Bhuntar Confluence")
+    ]
+    for wid, wname in wards_data:
+        cursor.execute("INSERT OR REPLACE INTO wards (ward_id, ward_name) VALUES (?, ?)", (wid, wname))
         
     conn.commit()
     conn.close()
@@ -65,7 +72,30 @@ def calculate_factor_of_safety(moisture_pct, slope_angle_deg=35.0):
     fs = num / den if den != 0 else 2.0
     return round(max(0.1, fs), 2)
 
-def insert_telemetry(raw_rain, raw_moisture, ward_id=4, alpha=0.25, force_override=False):
+def classify_hazard(moisture_pct, rain_rate, fs_val, risk_score):
+    """
+    Classifies the dominant environmental disaster type:
+    - FLASH_FLOOD: Intense rainfall surge inundating river channels
+    - LANDSLIDE: Geotechnical shear failure and debris mass movement
+    - COMPOUND_GEO_HYDRO: Concurrent cloudburst and slope collapse
+    - STABLE_NORMAL: Safe baseline
+    """
+    if risk_score < 50 and fs_val > 1.2:
+        return "STABLE_NORMAL", "Stable Baseline (Nominal Slope & River Conditions)", "green"
+    
+    is_flood = rain_rate >= 45.0 or (rain_rate >= 25.0 and moisture_pct >= 65.0)
+    is_slide = fs_val <= 1.05 or (fs_val <= 1.20 and moisture_pct >= 72.0)
+
+    if is_flood and is_slide:
+        return "COMPOUND_GEO_HYDRO", "Compound Flash Flood & Active Slope Failure", "red"
+    elif is_flood:
+        return "FLASH_FLOOD", "Flash Flood & Torrent Surge Inundation", "#E65100"
+    elif is_slide:
+        return "LANDSLIDE", "Critical Slope Failure & Debris Flow", "red"
+    else:
+        return "ELEVATED_RISK", "Elevated Environmental Surcharge", "#F57C00"
+
+def insert_telemetry(raw_rain, raw_moisture, ward_id=4, alpha=0.25, force_override=False, slope_angle_deg=35.0):
     conn = get_connection()
     cursor = conn.cursor()
     
@@ -95,7 +125,7 @@ def insert_telemetry(raw_rain, raw_moisture, ward_id=4, alpha=0.25, force_overri
             ari_score += rain_val * weights[i]
 
     # Geotechnical Factor of Safety
-    fs_val = calculate_factor_of_safety(filtered_moisture)
+    fs_val = calculate_factor_of_safety(filtered_moisture, slope_angle_deg)
 
     # Dynamic Risk Score (Moisture 50%, ARI 30%, FS Factor 20%)
     norm_moisture = min(100.0, filtered_moisture)
@@ -113,16 +143,26 @@ def insert_telemetry(raw_rain, raw_moisture, ward_id=4, alpha=0.25, force_overri
     conn.commit()
     conn.close()
 
-def fetch_telemetry_history(limit=25):
+def fetch_telemetry_history(limit=25, ward_id=None):
     try:
         conn = get_connection()
-        query = f'''
-            SELECT t.timestamp, t.raw_rainfall, t.raw_moisture, t.filtered_moisture, 
-                   t.ari_score, t.fs_value, t.risk_score, w.ward_name
-            FROM telemetry t
-            JOIN wards w ON t.ward_id = w.ward_id
-            ORDER BY t.log_id DESC LIMIT {limit}
-        '''
+        if ward_id is not None:
+            query = f'''
+                SELECT t.timestamp, t.raw_rainfall, t.raw_moisture, t.filtered_moisture, 
+                       t.ari_score, t.fs_value, t.risk_score, w.ward_name, t.ward_id
+                FROM telemetry t
+                JOIN wards w ON t.ward_id = w.ward_id
+                WHERE t.ward_id = {int(ward_id)}
+                ORDER BY t.log_id DESC LIMIT {limit}
+            '''
+        else:
+            query = f'''
+                SELECT t.timestamp, t.raw_rainfall, t.raw_moisture, t.filtered_moisture, 
+                       t.ari_score, t.fs_value, t.risk_score, w.ward_name, t.ward_id
+                FROM telemetry t
+                JOIN wards w ON t.ward_id = w.ward_id
+                ORDER BY t.log_id DESC LIMIT {limit}
+            '''
         df = pd.read_sql_query(query, conn)
         conn.close()
         return df

@@ -1,6 +1,7 @@
 import time
 import random
 import data
+import gis_engine
 
 SCENARIOS = {
     "1": {
@@ -34,10 +35,25 @@ def run_simulation():
     print("=====================================================")
     print("⛰️ TerraSense Physics Environment Emulator Active")
     print("=====================================================")
-    print("Select Scenario Mode:")
-    print("1: Clear / Dry Weather")
+    
+    # Optional Ward Selector
+    print("Available Wards:")
+    for w_id, w_name in gis_engine.get_all_ward_options().items():
+        print(f"  {w_id}: {w_name}")
+        
+    ward_choice = input("\nEnter Ward ID to simulate [Default=4]: ").strip()
+    try:
+        target_ward = int(ward_choice) if ward_choice else 4
+    except ValueError:
+        target_ward = 4
+        
+    gis = gis_engine.get_ward_gis(target_ward)
+    print(f"Selected: {gis['name']} (Slope: {gis['slope_angle_deg']}°)")
+
+    print("\nSelect Scenario Mode:")
+    print("1: Clear / Dry Weather (Stable)")
     print("2: Steady Monsoon Rain (Gradual Saturation)")
-    print("3: Flash Cloudburst Event (Rapid Failure)")
+    print("3: Flash Cloudburst Event (Rapid Flood & Failure)")
     print("4: Post-Rain Drainage")
     print("5: 🛑 MANUAL OVERRIDE MODE (Control purely via Streamlit Sidebar)")
     
@@ -47,11 +63,11 @@ def run_simulation():
         print("\n🛑 Manual Control Enabled! `sim.py` is paused.")
         print("Use the sliders and 'Inject Test Packet' button in Streamlit to control data manually.\n")
         while True:
-            time.sleep(10)  # Keep thread alive without writing auto-packets
+            time.sleep(10)
 
     active_scenario = SCENARIOS.get(choice, SCENARIOS["2"])
     
-    print(f"\n🚀 Running Scenario: {active_scenario['name']}...")
+    print(f"\n🚀 Running Scenario: {active_scenario['name']} for Ward {target_ward}...")
     print("Pushing telemetry packets every 3s. Press Ctrl+C to stop.\n")
 
     current_raw_moisture = 42.0
@@ -71,9 +87,14 @@ def run_simulation():
         jittered_moisture = current_raw_moisture + random.uniform(-0.8, 0.8)
 
         # 3. Insert into database
-        data.insert_telemetry(raw_rain, jittered_moisture, ward_id=4)
+        data.insert_telemetry(
+            raw_rain,
+            jittered_moisture,
+            ward_id=target_ward,
+            slope_angle_deg=gis["slope_angle_deg"]
+        )
         
-        print(f"[{active_scenario['name']}] Rain: {round(raw_rain, 1)} mm/h | Soil Moisture: {round(jittered_moisture, 1)}%")
+        print(f"[{gis['node_id']} - {active_scenario['name']}] Rain: {round(raw_rain, 1)} mm/h | Soil Moisture: {round(jittered_moisture, 1)}%")
         time.sleep(3)
 
 if __name__ == "__main__":
